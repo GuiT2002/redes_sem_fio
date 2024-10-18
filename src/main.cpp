@@ -3,11 +3,10 @@
 DynamicMeshingRouting dynamicMeshingRouting;
 
 void setup() {
-    // Altere o ID conforme o ESP
-    dynamicMeshingRouting.setup(NODE_1_ID);  // Para o primeiro nó
-    // Exemplo: Para o segundo nó, mude para NODE_2_ID
+    dynamicMeshingRouting.setup();
 }
 
 void loop() {
     dynamicMeshingRouting.loop();
 }
+

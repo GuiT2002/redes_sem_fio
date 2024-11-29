@@ -1,6 +1,6 @@
 #include "DynamicMeshingRouting.h"
 
-uint32_t receiverNode = 0;
+uint32_t receiverNode = 761895598;
 
 DynamicMeshingRouting::DynamicMeshingRouting() 
     : taskSendMessage(TASK_SECOND * 5, TASK_FOREVER, [this](){ sendMessage(mesh.getNodeId()); }) {}
@@ -14,6 +14,10 @@ void DynamicMeshingRouting::setup() {
 
     userScheduler.addTask(taskSendMessage);
     taskSendMessage.enable();
+
+    if (mesh.getNodeId() != receiverNode) {
+        taskSendMessage.enable();  // Only enable sending for non-receiver nodes
+    }
 }
 
 void DynamicMeshingRouting::loop() {
@@ -21,105 +25,145 @@ void DynamicMeshingRouting::loop() {
 }
 
 void DynamicMeshingRouting::sendMessage(uint32_t nodeId) {
-    // Prepare the message to be broadcasted
-    String msg = "Hello from Node " + String(nodeId);
+    // Only non-receiver nodes should broadcast messages
+    if (nodeId == receiverNode) {
+        return;
+    }
 
-    // Send the message to all nodes (broadcast)
+    String msg = "Hello from Node " + String(nodeId);
     mesh.sendBroadcast(msg);
-    Serial.printf("Node %u broadcasting message\n", nodeId);
 }
 
 
 void DynamicMeshingRouting::receivedCallback(uint32_t from, String &msg) {
-    Serial.printf("Received from node %u: %s\n", from, msg.c_str());
+    Serial.printf("[node %u] %s\n", from, msg.c_str());
 
-    // Check if this node is the receiver
-    if (nodeRoles[mesh.getNodeId()] == "receiver") {
-        Serial.println("Message received at the receiver: " + msg);
+    if (mesh.getNodeId() == receiverNode) {
+        // If this is the receiver, print the full path
+        Serial.println("Path: " + msg.substring(16));
+        Serial.println();
     } else {
         // If this is a forwarder, append this node's ID to the path and forward the message
         String newPath = msg + " -> " + String(mesh.getNodeId());
         uint32_t nextNode = findBestPath(mesh.getNodeId(), receiverNode);  // Find next hop to the receiver
         if (nextNode != -1) {
-            mesh.sendSingle(nextNode, newPath);
-            Serial.printf("Forwarding message to node %u\n", nextNode);
-        } else {
+            mesh.sendSingle(nextNode, newPath);}
+        /* } else {
             Serial.println("No available path.");
-        }
+        } */
     }
+
+    //printCostMatrix();
+
+    Serial.println();
 }
 
 
 void DynamicMeshingRouting::newConnectionCallback(uint32_t nodeId) {
-    Serial.printf("New connection with node %u\n", nodeId);
+    Serial.printf("New connection with node %u", nodeId);
     initializeNodeCosts(nodeId);
 
-    // Dynamically assign roles if needed
-    if (nodeRoles.empty()) {
-        nodeRoles[nodeId] = "receiver";  // First node becomes the receiver (central node)
+    // Assign the base station role to the receiver node only
+    if (nodeId == receiverNode) {
+        nodeRoles[nodeId] = "receiver";
     } else {
-        nodeRoles[nodeId] = "sender";  // Other nodes become senders
+        nodeRoles[nodeId] = "sender";
     }
 
-    recalculatePaths();  // Recalculate paths whenever a new node connects
+    recalculatePaths();  
 }
 
 void DynamicMeshingRouting::droppedConnectionCallback(uint32_t nodeId) {
-    Serial.printf("Node %u disconnected\n", nodeId);
+    //Serial.printf("Node %u disconnected\n", nodeId);
     removeNodeCosts(nodeId);
 
     // Remove node role
     nodeRoles.erase(nodeId);
 
-    recalculatePaths();  // Recalculate paths when a node disconnects
+    recalculatePaths();  
 }
 
 uint32_t DynamicMeshingRouting::findBestPath(uint32_t from, uint32_t to) {
+    // Use a priority queue to efficiently select minimum distance node
+    std::priority_queue<std::pair<int, uint32_t>, 
+                        std::vector<std::pair<int, uint32_t>>, 
+                        std::greater<std::pair<int, uint32_t>>> pq;
+    
+    // Distances map to track shortest known distance to each node
     std::map<uint32_t, int> distances;
+    
+    // Previous node map to reconstruct the path
     std::map<uint32_t, uint32_t> previous;
-    std::vector<uint32_t> unvisited;
-
+    
+    // Initialize all distances to infinity except start node
     for (const auto &node : mesh.getNodeList()) {
-        distances[node] = (node == from) ? 0 : INT_MAX;
-        unvisited.push_back(node);
+        distances[node] = INT_MAX;
     }
-
-    while (!unvisited.empty()) {
-        uint32_t currentNode = unvisited.front();
-        for (auto node : unvisited) {
-            if (distances[node] < distances[currentNode]) {
-                currentNode = node;
-            }
-        }
-
-        unvisited.erase(std::remove(unvisited.begin(), unvisited.end(), currentNode), unvisited.end());
-
+    distances[from] = 0;
+    
+    // Push start node to priority queue
+    pq.push({0, from});
+    
+    while (!pq.empty()) {
+        // Get node with minimum distance
+        int currentDist = pq.top().first;
+        uint32_t currentNode = pq.top().second;
+        pq.pop();
+        
+        // If we've reached the destination, reconstruct and return the path
         if (currentNode == to) {
-            paths[to].push_back(previous[to]);
-            return currentNode;
+            // Reconstruct path
+            std::vector<uint32_t> path;
+            while (currentNode != from) {
+                path.push_back(currentNode);
+                currentNode = previous[currentNode];
+            }
+            path.push_back(from);
+            std::reverse(path.begin(), path.end());
+            
+            // Store the path
+            paths[to] = path;
+            
+            // Return the destination node
+            return to;
         }
-
+        
+        // Skip if we've found a better path already
+        if (currentDist > distances[currentNode]) continue;
+        
+        // Check all neighbors
         for (const auto &neighbor : costs[currentNode]) {
-            int newDist = distances[currentNode] + neighbor.second; 
+            int newDist = distances[currentNode] + neighbor.second;
+            
+            // If we've found a shorter path
             if (newDist < distances[neighbor.first]) {
                 distances[neighbor.first] = newDist;
                 previous[neighbor.first] = currentNode;
+                pq.push({newDist, neighbor.first});
             }
         }
     }
-
+    
+    // No path found
     return -1;
 }
 
 void DynamicMeshingRouting::increaseCost(uint32_t from, uint32_t to) {
-    costs[from][to] += random(1, 5);
-    costs[to][from] = costs[from][to];
+
+    if (costs[from][to] > 20){
+        costs[from][to] = 1;
+        costs[to][from] = 1;
+    }
+    else{
+        costs[from][to] += random(1, 3);
+        costs[to][from] += random(1, 3);
+    }
 }
 
 void DynamicMeshingRouting::initializeNodeCosts(uint32_t newNode) {
     for (auto &entry : costs) {
-        costs[newNode][entry.first] = random(5, 15);
-        costs[entry.first][newNode] = costs[newNode][entry.first];
+        costs[newNode][entry.first] = random(1, 10);
+        costs[entry.first][newNode] = random(1, 10);
     }
 }
 
@@ -160,3 +204,23 @@ void DynamicMeshingRouting::printPath(uint32_t from, uint32_t to) {
     }
     Serial.println();
 }
+
+/* void DynamicMeshingRouting::printCostMatrix() {
+    Serial.println("Cost Matrix:");
+    if (costs.empty()) {
+        Serial.println("No costs recorded yet.");
+        return; // Exit if the costs are empty
+    }
+    
+    for (const auto &fromEntry : costs) {
+        for (const auto &toEntry : fromEntry.second) {
+            Serial.print("Cost from Node ");
+            Serial.print(fromEntry.first);
+            Serial.print(" to Node ");
+            Serial.print(toEntry.first);
+            Serial.print(": ");
+            Serial.println(toEntry.second);
+        }
+    }
+    Serial.println(); // Add a blank line for readability
+} */

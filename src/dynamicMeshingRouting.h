@@ -4,6 +4,8 @@
 #include "painlessMesh.h"
 #include <map>
 #include <vector>
+#include <queue>       // for priority_queue
+#include <utility>     // for pair
 
 #define MESH_PREFIX     "meshNetwork"
 #define MESH_PASSWORD   "securePassword"
@@ -34,6 +36,7 @@ private:
     void initializeNodeCosts(uint32_t newNode);
     void removeNodeCosts(uint32_t nodeId);
     void printPath(uint32_t from, uint32_t to); // Método para imprimir o caminho percorrido
+    //void printCostMatrix();
 };
 
 #endif // DYNAMIC_MESHING_ROUTING_H
